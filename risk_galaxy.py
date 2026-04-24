@@ -1,0 +1,654 @@
+#!/usr/bin/env python3
+"""
+AI Risk Galaxy — Interactive Constellation Map
+================================================
+Transforms risk scoring data into a roadmap.sh-style galaxy
+with glowing chain connections between risk nodes.
+
+Zero dependencies. Python standard library only.
+
+  * Google Colab  →  paste + run
+  * VS Code       →  python risk_galaxy.py
+  * Terminal       →  python3 risk_galaxy.py
+"""
+
+import json, os, tempfile, webbrowser
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATA  (from risk_scoring_app.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYSTEM_NAME = "AI-Enabled Insider Threat Detection System"
+
+REGULATORY_WEIGHTS = {
+    "EU AI Act": 1.5, "UK GDPR": 1.3, "HRA/ECHR": 1.2,
+    "UK Employment Law": 1.1, "RIPA/IPA": 1.1,
+}
+
+REGULATORY_MAP = {
+    "Privacy": [
+        "UK GDPR Art.5 (principles)", "UK GDPR Art.6 (lawful basis)",
+        "UK GDPR Art.35 (DPIA)", "EU AI Act Art.10 (data governance)",
+        "HRA 1998 / Art.8 ECHR (private life)"
+    ],
+    "Accuracy": [
+        "EU AI Act Art.15 (accuracy & robustness)",
+        "EU AI Act Art.9 (risk management)",
+        "UK GDPR Art.5(1)(d) (accuracy)"
+    ],
+    "Bias": [
+        "EU AI Act Art.10 (data governance)", "Equality Act 2010",
+        "UK GDPR Art.22 (automated decision-making)"
+    ],
+    "Accountability": [
+        "EU AI Act Art.26 (deployer obligations)",
+        "EU AI Act Art.27 (FRIA)",
+        "UK AI White Paper (accountability principle)"
+    ],
+    "Transparency": [
+        "EU AI Act Art.13 (transparency)",
+        "EU AI Act Art.14 (human oversight)",
+        "UK GDPR Art.13-14 (information rights)",
+        "UK AI White Paper (transparency principle)"
+    ],
+    "Human Factors": [
+        "EU AI Act Art.14 (human oversight)",
+        "UK AI White Paper (safety principle)",
+        "ERA 1996 s.98 (fair dismissal)"
+    ],
+    "Security": [
+        "EU AI Act Art.15 (cybersecurity)",
+        "UK GDPR Art.32 (security of processing)",
+        "NIS Regulations 2018"
+    ],
+    "Legal": [
+        "EU AI Act Chapter III (all high-risk obligations)",
+        "UK GDPR (all applicable provisions)",
+        "UK AI White Paper (all 5 principles)"
+    ],
+}
+
+SUGGESTED_MITIGATIONS = {
+    "Privacy": "Purpose limitation; data minimisation audits; regular proportionality reviews",
+    "Accuracy": "Model validation; threshold calibration; mandatory human review before action",
+    "Bias": "Bias auditing; fairness metrics (demographic parity, equalised odds); diverse training data",
+    "Accountability": "RACI matrix; escalation procedures; contractual liability allocation",
+    "Transparency": "XAI techniques (SHAP/LIME); plain-language explanation templates",
+    "Human Factors": "Analyst training programmes; decision support tools; mandatory justification requirements",
+    "Security": "Robustness testing; input validation; adversarial training; integrity monitoring",
+    "Legal": "Compliance programme; conformity assessment; legal review; regulatory engagement",
+}
+
+DEFAULT_RISKS = [
+    {"id":"R001","area":"Privacy","risk":"Excessive data collection beyond security necessity","likelihood":4,"impact":4,"regulation":"UK GDPR","mitigation":"Purpose limitation; data minimisation audits; regular reviews"},
+    {"id":"R002","area":"Privacy","risk":"Function creep: repurposing for productivity monitoring","likelihood":3,"impact":4,"regulation":"UK GDPR","mitigation":"Policy controls; access restrictions; audit trails"},
+    {"id":"R003","area":"Accuracy","risk":"False positive alerts wrongly flagging employees","likelihood":4,"impact":4,"regulation":"EU AI Act","mitigation":"Model validation; threshold calibration; mandatory human review"},
+    {"id":"R004","area":"Accuracy","risk":"False negatives: genuine threats undetected","likelihood":3,"impact":5,"regulation":"EU AI Act","mitigation":"Complementary controls; red-team testing; performance monitoring"},
+    {"id":"R005","area":"Bias","risk":"Discriminatory profiling based on protected characteristics","likelihood":3,"impact":4,"regulation":"EU AI Act","mitigation":"Bias auditing; fairness metrics; diverse training data"},
+    {"id":"R006","area":"Accountability","risk":"Unclear responsibility when AI decisions cause harm","likelihood":4,"impact":4,"regulation":"EU AI Act","mitigation":"RACI matrix; escalation procedures; contractual liability allocation"},
+    {"id":"R007","area":"Transparency","risk":"Inability to explain risk scores to employees","likelihood":4,"impact":3,"regulation":"EU AI Act","mitigation":"XAI techniques (SHAP/LIME); explanation templates"},
+    {"id":"R008","area":"Human Factors","risk":"Automation bias leading to unjust employment outcomes","likelihood":4,"impact":4,"regulation":"UK Employment Law","mitigation":"Analyst training; decision support tools; mandatory justification"},
+    {"id":"R009","area":"Security","risk":"Adversarial manipulation of the monitoring system","likelihood":2,"impact":5,"regulation":"EU AI Act","mitigation":"Robustness testing; input validation; adversarial training"},
+    {"id":"R010","area":"Legal","risk":"Non-compliance with EU AI Act high-risk requirements","likelihood":3,"impact":5,"regulation":"EU AI Act","mitigation":"Compliance programme; conformity assessment; legal review"},
+]
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SCORING LOGIC
+# ═══════════════════════════════════════════════════════════════════════════
+
+def assess_risks(risks):
+    results = []
+    for r in risks:
+        w = REGULATORY_WEIGHTS.get(r["regulation"], 1.0)
+        base = r["likelihood"] * r["impact"]
+        weighted = round(base * w, 2)
+        cat = "Critical" if weighted >= 15 else "High" if weighted >= 10 else "Medium" if weighted >= 5 else "Low"
+        results.append({**r, "base": base, "weight": w, "weighted": weighted, "category": cat})
+    return sorted(results, key=lambda x: x["weighted"], reverse=True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  HTML BUILDER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_html():
+    assessed = assess_risks(DEFAULT_RISKS)
+
+    # Group by area
+    area_data = {}
+    for area in REGULATORY_MAP:
+        area_risks = [r for r in assessed if r["area"] == area]
+        max_score = max((r["weighted"] for r in area_risks), default=0)
+        avg_score = sum(r["weighted"] for r in area_risks) / len(area_risks) if area_risks else 0
+        cat = "Critical" if max_score >= 15 else "High" if max_score >= 10 else "Medium" if max_score >= 5 else "Low"
+        area_data[area] = {
+            "risks": area_risks,
+            "regs": REGULATORY_MAP[area],
+            "mitigation": SUGGESTED_MITIGATIONS.get(area, ""),
+            "maxScore": max_score,
+            "avgScore": round(avg_score, 1),
+            "category": cat,
+            "riskCount": len(area_risks),
+        }
+
+    data_json = json.dumps(area_data)
+    weights_json = json.dumps(REGULATORY_WEIGHTS)
+
+    js = r"""
+const DATA = """ + data_json + r""";
+const WEIGHTS = """ + weights_json + r""";
+const AREAS = Object.keys(DATA);
+
+const CAT_COLORS = {
+  Critical: {glow:'#ff2d55',bg:'rgba(255,45,85,0.12)',border:'rgba(255,45,85,0.5)',text:'#ff6b8a',ring:'rgba(255,45,85,0.3)'},
+  High:     {glow:'#ff9f0a',bg:'rgba(255,159,10,0.12)',border:'rgba(255,159,10,0.5)',text:'#ffb849',ring:'rgba(255,159,10,0.3)'},
+  Medium:   {glow:'#ffd60a',bg:'rgba(255,214,10,0.12)',border:'rgba(255,214,10,0.5)',text:'#ffe066',ring:'rgba(255,214,10,0.3)'},
+  Low:      {glow:'#30d158',bg:'rgba(48,209,88,0.12)',border:'rgba(48,209,88,0.5)',text:'#5de882',ring:'rgba(48,209,88,0.3)'}
+};
+
+const AREA_ICONS = {
+  Privacy:'\u{1F512}', Accuracy:'\u{1F3AF}', Bias:'\u2696\uFE0F',
+  Accountability:'\u{1F4CB}', Transparency:'\u{1F50D}',
+  'Human Factors':'\u{1F9D1}\u200D\u{1F4BB}', Security:'\u{1F6E1}\uFE0F', Legal:'\u2696\uFE0F'
+};
+
+let expanded = {};
+
+function toggle(area) {
+  expanded[area] = !expanded[area];
+  render();
+}
+
+function render() {
+  const map = document.getElementById('galaxy-map');
+  let html = '';
+
+  // ── CENTRAL SPINE NODE ──
+  html += '<div class="spine-node core-node">';
+  html += '<div class="core-glow"></div>';
+  html += '<div class="core-label">AI INSIDER THREAT<br>RISK GALAXY</div>';
+  html += '<div class="core-sub">' + AREAS.length + ' Risk Domains \u00b7 ' +
+    Object.values(DATA).reduce((s,d)=>s+d.riskCount,0) + ' Identified Risks</div>';
+  html += '</div>';
+
+  // ── AREA CHAINS ──
+  AREAS.forEach((area, i) => {
+    const d = DATA[area];
+    const c = CAT_COLORS[d.category];
+    const side = i % 2 === 0 ? 'left' : 'right';
+    const isOpen = expanded[area];
+
+    // Chain connector from spine
+    html += '<div class="chain-row chain-' + side + '">';
+
+    // Connector line
+    html += '<div class="chain-line" style="background:' + c.glow + ';box-shadow:0 0 8px ' + c.glow + ',0 0 20px ' + c.ring + '"></div>';
+
+    // Area node
+    html += '<div class="area-node' + (isOpen ? ' open' : '') + '" style="border-color:' + c.border +
+      ';background:' + c.bg + '" onclick="toggle(\'' + area + '\')">';
+
+    // Node header
+    html += '<div class="area-header">';
+    html += '<span class="area-icon">' + (AREA_ICONS[area]||'\u2B50') + '</span>';
+    html += '<div class="area-title">' + area + '</div>';
+    html += '<div class="area-badge" style="background:' + c.glow + '">' + d.category + '</div>';
+    html += '</div>';
+
+    // Score bar
+    html += '<div class="area-scores">';
+    html += '<span class="score-pill" style="color:' + c.text + '">Avg ' + d.avgScore + '</span>';
+    html += '<span class="score-pill" style="color:' + c.text + '">Peak ' + d.maxScore + '</span>';
+    html += '<span class="score-pill">' + d.riskCount + ' risk' + (d.riskCount!==1?'s':'') + '</span>';
+    html += '</div>';
+
+    // Expand indicator
+    html += '<div class="expand-hint">' + (isOpen ? '\u25B2 Collapse' : '\u25BC Expand') + '</div>';
+
+    html += '</div>'; // area-node
+
+    html += '</div>'; // chain-row
+
+    // ── EXPANDED PANEL (risks + regulations) ──
+    if (isOpen) {
+      html += '<div class="expand-panel panel-' + side + '" style="border-color:' + c.border + '">';
+
+      // Sub-chain: RISKS
+      html += '<div class="sub-section">';
+      html += '<div class="sub-heading" style="color:' + c.text + '">\u26A0\uFE0F Identified Risks</div>';
+      d.risks.forEach((r, ri) => {
+        const rc = CAT_COLORS[r.category];
+        html += '<div class="risk-node">';
+        html += '<div class="risk-chain-dot" style="background:' + rc.glow + ';box-shadow:0 0 6px ' + rc.glow + '"></div>';
+        html += '<div class="risk-body">';
+        html += '<div class="risk-id" style="color:' + rc.text + '">' + r.id + ' \u00b7 ' + r.category + '</div>';
+        html += '<div class="risk-desc">' + r.risk + '</div>';
+        html += '<div class="risk-metrics">';
+        html += '<span>L:' + r.likelihood + '</span><span>I:' + r.impact + '</span>';
+        html += '<span>\u00d7' + r.weight.toFixed(1) + '</span>';
+        html += '<span class="risk-wscore" style="color:' + rc.text + '">' + r.weighted.toFixed(1) + '</span>';
+        html += '</div>';
+        html += '<div class="risk-mit">\u{1F6E1}\uFE0F ' + r.mitigation + '</div>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+
+      // Sub-chain: REGULATIONS
+      html += '<div class="sub-section">';
+      html += '<div class="sub-heading" style="color:' + c.text + '">\u{1F4DC} Regulatory Obligations</div>';
+      d.regs.forEach(reg => {
+        html += '<div class="reg-node">';
+        html += '<div class="reg-chain-dot"></div>';
+        html += '<span>' + reg + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+
+      // Mitigation summary
+      html += '<div class="mit-summary" style="border-color:' + c.border + '">';
+      html += '<div class="mit-title" style="color:' + c.text + '">\u2705 Mitigation Strategy</div>';
+      html += '<div>' + d.mitigation + '</div>';
+      html += '</div>';
+
+      html += '</div>'; // expand-panel
+    }
+  });
+
+  // ── FOOTER LEGEND ──
+  html += '<div class="legend">';
+  ['Critical','High','Medium','Low'].forEach(cat => {
+    const c = CAT_COLORS[cat];
+    html += '<div class="legend-item"><span class="legend-dot" style="background:' + c.glow + ';box-shadow:0 0 6px ' + c.glow + '"></span>' + cat + '</div>';
+  });
+  html += '</div>';
+
+  // Weights bar
+  html += '<div class="weights-bar">';
+  html += '<div class="weights-title">\u2696\uFE0F Regulatory Weight Multipliers</div><div class="weights-row">';
+  Object.entries(WEIGHTS).forEach(([reg, w]) => {
+    html += '<div class="weight-chip"><span class="wval">' + w + 'x</span><span class="wreg">' + reg + '</span></div>';
+  });
+  html += '</div></div>';
+
+  map.innerHTML = html;
+}
+
+// Star field
+function initStars() {
+  const canvas = document.getElementById('stars');
+  const ctx = canvas.getContext('2d');
+  let w, h, stars = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = document.body.scrollHeight;
+    stars = [];
+    for (let i = 0; i < 300; i++) {
+      stars.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        r: Math.random() * 1.5 + 0.3,
+        a: Math.random() * 0.6 + 0.2,
+        speed: Math.random() * 0.005 + 0.002
+      });
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+    const t = Date.now();
+    stars.forEach(s => {
+      const flicker = 0.5 + 0.5 * Math.sin(t * s.speed);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(200,220,255,' + (s.a * flicker).toFixed(2) + ')';
+      ctx.fill();
+    });
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); });
+  resize();
+  draw();
+
+  // Re-size canvas when content changes
+  const observer = new MutationObserver(() => {
+    canvas.height = document.body.scrollHeight;
+    h = canvas.height;
+  });
+  observer.observe(document.getElementById('galaxy-map'), {childList:true,subtree:true});
+}
+
+document.addEventListener('DOMContentLoaded', () => { initStars(); render(); });
+"""
+
+    css = r"""
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap');
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:'Outfit',sans-serif;
+  background:#050a14;
+  color:#c8d6e5;
+  min-height:100vh;
+  overflow-x:hidden;
+  position:relative;
+}
+#stars{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.container{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:40px 20px 60px}
+
+/* ── HEADER ── */
+.galaxy-header{
+  text-align:center;
+  margin-bottom:48px;
+  position:relative;
+}
+.galaxy-header::before{
+  content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:500px;height:300px;
+  background:radial-gradient(ellipse,rgba(96,165,250,0.06)0%,transparent 70%);
+  pointer-events:none;
+}
+.galaxy-header h1{
+  font-size:clamp(24px,4vw,38px);font-weight:800;
+  background:linear-gradient(135deg,#60a5fa 0%,#a78bfa 40%,#f472b6 70%,#60a5fa 100%);
+  background-size:200% auto;
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  animation:shimmer 6s linear infinite;
+  letter-spacing:-0.5px;
+}
+@keyframes shimmer{0%{background-position:0% center}100%{background-position:200% center}}
+.galaxy-header .subtitle{
+  font-family:'JetBrains Mono',monospace;
+  font-size:12px;color:#566a8a;
+  margin-top:8px;letter-spacing:1px;text-transform:uppercase;
+}
+.formula-bar{
+  margin-top:16px;display:inline-flex;gap:6px;
+  padding:8px 20px;border-radius:99px;
+  background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);
+  font-family:'JetBrains Mono',monospace;font-size:12px;color:#8b9dc3;
+}
+.formula-bar .op{color:#60a5fa}
+
+/* ── GALAXY MAP ── */
+#galaxy-map{
+  display:flex;flex-direction:column;align-items:center;gap:0;
+  position:relative;
+}
+
+/* Core node */
+.core-node{
+  position:relative;width:280px;text-align:center;
+  padding:28px 20px;border-radius:20px;
+  background:rgba(96,165,250,0.06);
+  border:1px solid rgba(96,165,250,0.2);
+  margin-bottom:12px;
+  cursor:default;
+}
+.core-glow{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:200px;height:200px;border-radius:50%;
+  background:radial-gradient(circle,rgba(96,165,250,0.12)0%,transparent 70%);
+  pointer-events:none;
+  animation:pulse 4s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:0.6;transform:translate(-50%,-50%) scale(1)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}}
+.core-label{
+  font-weight:800;font-size:16px;letter-spacing:1px;
+  color:#e2e8f0;position:relative;
+}
+.core-sub{
+  font-size:12px;color:#566a8a;margin-top:6px;position:relative;
+  font-family:'JetBrains Mono',monospace;
+}
+
+/* ── CHAIN ROW (alternating left/right) ── */
+.chain-row{
+  display:flex;align-items:center;gap:0;
+  width:100%;max-width:800px;
+  margin:0 0 2px;
+  position:relative;
+}
+.chain-left{flex-direction:row-reverse}
+.chain-right{flex-direction:row}
+
+/* Connector line */
+.chain-line{
+  width:80px;height:3px;flex-shrink:0;
+  border-radius:2px;
+  position:relative;
+}
+.chain-line::before{
+  content:'';position:absolute;
+  width:10px;height:10px;border-radius:50%;
+  top:50%;transform:translateY(-50%);
+  background:inherit;box-shadow:inherit;
+}
+.chain-left .chain-line::before{right:-5px}
+.chain-right .chain-line::before{left:-5px}
+
+/* Vertical spine segment between rows */
+.chain-row::before{
+  content:'';position:absolute;
+  left:50%;transform:translateX(-50%);
+  top:-20px;width:2px;height:20px;
+  background:linear-gradient(to bottom,rgba(96,165,250,0.08),rgba(96,165,250,0.25));
+}
+.chain-row:first-child::before{display:none}
+
+/* ── AREA NODE ── */
+.area-node{
+  flex:1;max-width:340px;
+  padding:16px 20px;border-radius:14px;
+  border:1px solid;
+  cursor:pointer;
+  transition:all 0.25s ease;
+  position:relative;
+}
+.area-node:hover{transform:translateY(-2px);filter:brightness(1.15)}
+.area-node.open{border-width:2px}
+
+.area-header{display:flex;align-items:center;gap:10px}
+.area-icon{font-size:22px;flex-shrink:0}
+.area-title{flex:1;font-weight:700;font-size:15px;color:#e2e8f0}
+.area-badge{
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;
+  padding:3px 10px;border-radius:99px;color:#fff;
+}
+.area-scores{
+  display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;
+}
+.score-pill{
+  font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;
+  color:#566a8a;
+}
+.expand-hint{
+  font-size:10px;color:#3b4f6e;margin-top:8px;
+  font-family:'JetBrains Mono',monospace;letter-spacing:0.5px;
+  text-align:center;
+}
+
+/* ── EXPANDED PANEL ── */
+.expand-panel{
+  width:100%;max-width:700px;
+  margin:-4px auto 8px;
+  padding:24px;border-radius:16px;
+  background:rgba(10,14,23,0.85);
+  border:1px solid;
+  backdrop-filter:blur(12px);
+  animation:panelIn 0.3s ease;
+}
+@keyframes panelIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
+
+.sub-section{margin-bottom:20px}
+.sub-heading{
+  font-weight:700;font-size:13px;margin-bottom:10px;
+  text-transform:uppercase;letter-spacing:1px;
+}
+
+/* Risk sub-nodes */
+.risk-node{
+  display:flex;gap:12px;align-items:flex-start;
+  padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.04);
+  position:relative;
+}
+.risk-node:last-child{border-bottom:none}
+.risk-chain-dot{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px;
+  position:relative;
+}
+/* Vertical chain between dots */
+.risk-node:not(:last-child) .risk-chain-dot::after{
+  content:'';position:absolute;left:50%;transform:translateX(-50%);
+  top:12px;width:2px;height:calc(100% + 14px);
+  background:rgba(255,255,255,0.06);
+}
+.risk-body{flex:1;min-width:0}
+.risk-id{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;margin-bottom:2px}
+.risk-desc{font-size:13px;color:#c8d6e5;line-height:1.4}
+.risk-metrics{
+  display:flex;gap:12px;margin-top:6px;
+  font-family:'JetBrains Mono',monospace;font-size:11px;color:#566a8a;
+}
+.risk-wscore{font-weight:700}
+.risk-mit{
+  font-size:11px;color:#3b4f6e;margin-top:6px;line-height:1.4;
+  padding-left:22px;position:relative;
+}
+
+/* Regulation sub-nodes */
+.reg-node{
+  display:flex;align-items:center;gap:10px;
+  padding:6px 0;font-size:12px;color:#8b9dc3;
+}
+.reg-chain-dot{
+  width:6px;height:6px;border-radius:50%;flex-shrink:0;
+  background:#3b4f6e;box-shadow:0 0 4px rgba(96,165,250,0.3);
+  position:relative;
+}
+.reg-node:not(:last-child) .reg-chain-dot::after{
+  content:'';position:absolute;left:50%;transform:translateX(-50%);
+  top:8px;width:1px;height:calc(100% + 8px);
+  background:rgba(96,165,250,0.1);
+}
+
+/* Mitigation box */
+.mit-summary{
+  padding:14px 18px;border-radius:10px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid;
+  font-size:12px;color:#8b9dc3;line-height:1.5;
+}
+.mit-title{font-weight:700;font-size:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+
+/* ── LEGEND ── */
+.legend{
+  display:flex;justify-content:center;gap:24px;
+  margin:40px 0 20px;
+}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#566a8a}
+.legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+
+/* ── WEIGHTS BAR ── */
+.weights-bar{
+  text-align:center;margin-top:12px;
+  padding:20px;border-radius:14px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid rgba(255,255,255,0.05);
+}
+.weights-title{
+  font-size:12px;color:#566a8a;margin-bottom:12px;
+  font-family:'JetBrains Mono',monospace;letter-spacing:0.5px;
+}
+.weights-row{display:flex;justify-content:center;gap:16px;flex-wrap:wrap}
+.weight-chip{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:10px 16px;border-radius:10px;
+  background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);
+  min-width:90px;
+}
+.wval{font-size:22px;font-weight:800;color:#60a5fa}
+.wreg{font-size:10px;color:#566a8a;font-family:'JetBrains Mono',monospace}
+
+/* ── RESPONSIVE ── */
+@media(max-width:700px){
+  .chain-row{flex-direction:column!important;align-items:center}
+  .chain-line{width:2px!important;height:30px!important}
+  .chain-line::before{display:none}
+  .area-node{max-width:100%}
+  .expand-panel{padding:16px}
+  .legend{flex-wrap:wrap;gap:12px}
+  .weights-row{gap:8px}
+}
+"""
+
+    body = r"""
+<canvas id="stars"></canvas>
+<div class="container">
+  <div class="galaxy-header">
+    <h1>AI Risk Galaxy</h1>
+    <div class="subtitle">""" + SYSTEM_NAME + r"""</div>
+    <div class="formula-bar">
+      Weighted Score <span class="op">=</span> Likelihood <span class="op">&times;</span> Impact <span class="op">&times;</span> Regulatory Weight
+    </div>
+  </div>
+  <div id="galaxy-map"></div>
+</div>
+"""
+
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">\n'
+        '<title>AI Risk Galaxy</title>\n'
+        '<style>' + css + '</style>\n'
+        '</head>\n<body>\n'
+        + body +
+        '\n<script>\n' + js + '\n</script>\n'
+        '</body>\n</html>'
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  LAUNCHER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _in_colab():
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
+def _in_jupyter():
+    try:
+        from IPython import get_ipython
+        return get_ipython().__class__.__name__ in ("ZMQInteractiveShell", "Shell")
+    except Exception:
+        return False
+
+def launch():
+    html = build_html()
+
+    if _in_colab() or _in_jupyter():
+        from IPython.display import HTML, display
+        safe = html.replace('"', "&quot;")
+        env = "Colab" if _in_colab() else "Jupyter"
+        display(HTML(
+            '<iframe srcdoc="' + safe + '" '
+            'style="width:100%;height:900px;border:none;border-radius:12px">'
+            '</iframe>'
+        ))
+        print("\n\u2705  Risk Galaxy loaded inline (" + env + ").")
+        return
+
+    fd, path = tempfile.mkstemp(suffix=".html", prefix="risk_galaxy_")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(html)
+    print("\u2705  Risk Galaxy saved to: " + path)
+    print("    Opening in your default browser...")
+    webbrowser.open("file://" + os.path.abspath(path))
+
+
+if __name__ == "__main__":
+    launch()
